@@ -27,29 +27,41 @@ else
         if bashio::addons.installed "${slug}"; then
             bashio::log.info "Found Z2M addon: ${slug}"
 
-            # Get the addon's web interface port
-            # Z2M frontend runs inside the addon container
-            # From another addon, we can reach it via the addon's hostname
-            Z2M_HOST="${slug}"
-            Z2M_PORT="8099"
-
-            # Try to get the actual port from addon options
-            ADDON_OPTIONS=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            # Get addon info from Supervisor API
+            ADDON_INFO=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
                 "http://supervisor/addons/${slug}/info" 2>/dev/null)
 
-            if [ $? -eq 0 ] && [ -n "${ADDON_OPTIONS}" ]; then
-                # Check if frontend is enabled and get port
-                FRONTEND_PORT=$(echo "${ADDON_OPTIONS}" | jq -r '.data.network["8099/tcp"] // empty' 2>/dev/null)
-                if [ -n "${FRONTEND_PORT}" ] && [ "${FRONTEND_PORT}" != "null" ]; then
-                    bashio::log.info "Z2M frontend exposed on host port: ${FRONTEND_PORT}"
+            if [ $? -eq 0 ] && [ -n "${ADDON_INFO}" ]; then
+                # Get the addon's IP address on the hassio network
+                ADDON_IP=$(echo "${ADDON_INFO}" | jq -r '.data.ip_address // empty' 2>/dev/null)
+
+                if [ -n "${ADDON_IP}" ] && [ "${ADDON_IP}" != "null" ]; then
+                    Z2M_HOST="${ADDON_IP}"
+                    bashio::log.info "Z2M addon IP: ${ADDON_IP}"
+                else
+                    # Fallback: try hostname via hassio DNS
+                    Z2M_HOST="${slug//_/-}"
+                    bashio::log.info "Z2M addon IP not found, trying hostname: ${Z2M_HOST}"
                 fi
 
-                # For internal Docker network, use the addon slug as hostname
-                # and the internal port (8099 for Z2M frontend)
-                INTERNAL_PORT=$(echo "${ADDON_OPTIONS}" | jq -r '.data.ingress_port // empty' 2>/dev/null)
-                if [ -n "${INTERNAL_PORT}" ] && [ "${INTERNAL_PORT}" != "null" ]; then
+                # Get the internal port (default 8099 for Z2M frontend)
+                Z2M_PORT="8099"
+                INTERNAL_PORT=$(echo "${ADDON_INFO}" | jq -r '.data.ingress_port // empty' 2>/dev/null)
+                if [ -n "${INTERNAL_PORT}" ] && [ "${INTERNAL_PORT}" != "null" ] && [ "${INTERNAL_PORT}" != "0" ]; then
                     Z2M_PORT="${INTERNAL_PORT}"
                 fi
+
+                # Also check host-exposed port for logging
+                FRONTEND_PORT=$(echo "${ADDON_INFO}" | jq -r '.data.network["8099/tcp"] // empty' 2>/dev/null)
+                if [ -n "${FRONTEND_PORT}" ] && [ "${FRONTEND_PORT}" != "null" ]; then
+                    bashio::log.info "Z2M frontend also on host port: ${FRONTEND_PORT}"
+                fi
+            else
+                bashio::log.error "Failed to get addon info from Supervisor API"
+                # Fallback: use the HA host IP with common Z2M port
+                Z2M_HOST=$(bashio::network.ipv4_address | head -1 | cut -d'/' -f1)
+                Z2M_PORT="8099"
+                bashio::log.info "Fallback: trying HA host ${Z2M_HOST}:${Z2M_PORT}"
             fi
 
             bashio::log.info "Z2M internal endpoint: ${Z2M_HOST}:${Z2M_PORT}"
@@ -84,9 +96,13 @@ server {
     root /var/www/z2m-lite;
     index index.html;
 
+    # DNS resolver for Docker/hassio network
+    resolver 127.0.0.11 valid=30s ipv6=off;
+
     # WebSocket proxy to Z2M
+    set \$z2m_upstream http://${Z2M_HOST}:${Z2M_PORT}/api;
     location /z2m-ws {
-        proxy_pass http://${Z2M_HOST}:${Z2M_PORT}/api;
+        proxy_pass \$z2m_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
