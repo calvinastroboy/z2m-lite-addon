@@ -7,84 +7,76 @@ bashio::log.info "Starting Z2M Lite Panel..."
 # Auto-discover Zigbee2MQTT
 # ============================================
 Z2M_HOST=""
-Z2M_PORT=""
-Z2M_PATH="/api"
+Z2M_PORT="8099"
 
 # 1. Check user config first
 if bashio::config.has_value "z2m_host" && [ "$(bashio::config 'z2m_host')" != "" ]; then
     Z2M_HOST=$(bashio::config 'z2m_host')
     Z2M_PORT=$(bashio::config 'z2m_port')
-    Z2M_PATH=$(bashio::config 'z2m_path')
     bashio::log.info "Using manual config: ${Z2M_HOST}:${Z2M_PORT}"
 else
-    # 2. Auto-discover Z2M addon via Supervisor API
+    # 2. Auto-discover via Supervisor API — list ALL addons, find Z2M
     bashio::log.info "Auto-discovering Zigbee2MQTT..."
 
-    # Known Z2M addon slugs
-    Z2M_SLUGS="a0d7b954_zigbee2mqtt 45df7312_zigbee2mqtt core_zigbee2mqtt"
+    ADDONS_JSON=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        "http://supervisor/addons" 2>/dev/null)
 
-    for slug in ${Z2M_SLUGS}; do
-        if bashio::addons.installed "${slug}"; then
-            bashio::log.info "Found Z2M addon: ${slug}"
+    # Find Z2M addon slug by matching name or slug pattern
+    Z2M_SLUG=$(echo "${ADDONS_JSON}" | jq -r '
+        .data.addons[]
+        | select(.slug | test("zigbee2mqtt"))
+        | .slug
+    ' 2>/dev/null | head -1)
 
-            # Get addon info from Supervisor API
-            ADDON_INFO=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-                "http://supervisor/addons/${slug}/info" 2>/dev/null)
+    if [ -n "${Z2M_SLUG}" ]; then
+        bashio::log.info "Found Z2M addon: ${Z2M_SLUG}"
 
-            if [ $? -eq 0 ] && [ -n "${ADDON_INFO}" ]; then
-                # Get the addon's IP address on the hassio network
-                ADDON_IP=$(echo "${ADDON_INFO}" | jq -r '.data.ip_address // empty' 2>/dev/null)
+        # Get detailed info for this addon
+        ADDON_INFO=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            "http://supervisor/addons/${Z2M_SLUG}/info" 2>/dev/null)
 
-                if [ -n "${ADDON_IP}" ] && [ "${ADDON_IP}" != "null" ]; then
-                    Z2M_HOST="${ADDON_IP}"
-                    bashio::log.info "Z2M addon IP: ${ADDON_IP}"
-                else
-                    # Fallback: try hostname via hassio DNS
-                    Z2M_HOST="${slug//_/-}"
-                    bashio::log.info "Z2M addon IP not found, trying hostname: ${Z2M_HOST}"
-                fi
+        # Try to get IP address
+        ADDON_IP=$(echo "${ADDON_INFO}" | jq -r '.data.ip_address // empty' 2>/dev/null)
+        bashio::log.info "Addon info ip_address: '${ADDON_IP}'"
 
-                # Get the internal port (default 8099 for Z2M frontend)
-                Z2M_PORT="8099"
-                INTERNAL_PORT=$(echo "${ADDON_INFO}" | jq -r '.data.ingress_port // empty' 2>/dev/null)
-                if [ -n "${INTERNAL_PORT}" ] && [ "${INTERNAL_PORT}" != "null" ] && [ "${INTERNAL_PORT}" != "0" ]; then
-                    Z2M_PORT="${INTERNAL_PORT}"
-                fi
-
-                # Also check host-exposed port for logging
-                FRONTEND_PORT=$(echo "${ADDON_INFO}" | jq -r '.data.network["8099/tcp"] // empty' 2>/dev/null)
-                if [ -n "${FRONTEND_PORT}" ] && [ "${FRONTEND_PORT}" != "null" ]; then
-                    bashio::log.info "Z2M frontend also on host port: ${FRONTEND_PORT}"
-                fi
-            else
-                bashio::log.error "Failed to get addon info from Supervisor API"
-                # Fallback: use the HA host IP with common Z2M port
-                Z2M_HOST=$(bashio::network.ipv4_address | head -1 | cut -d'/' -f1)
-                Z2M_PORT="8099"
-                bashio::log.info "Fallback: trying HA host ${Z2M_HOST}:${Z2M_PORT}"
-            fi
-
-            bashio::log.info "Z2M internal endpoint: ${Z2M_HOST}:${Z2M_PORT}"
-            break
+        if [ -n "${ADDON_IP}" ] && [ "${ADDON_IP}" != "null" ] && [ "${ADDON_IP}" != "" ]; then
+            Z2M_HOST="${ADDON_IP}"
+            bashio::log.info "Using Z2M addon IP: ${Z2M_HOST}"
+        else
+            # Try hostname: addon slugs with _ replaced by - work as Docker hostnames
+            Z2M_HOST="${Z2M_SLUG//_/-}"
+            bashio::log.info "IP not available, trying Docker hostname: ${Z2M_HOST}"
         fi
-    done
 
-    # 3. Fallback: try common local addresses
+        # Check if addon has a custom port
+        ADDON_PORT=$(echo "${ADDON_INFO}" | jq -r '.data.network["8099/tcp"] // empty' 2>/dev/null)
+        if [ -n "${ADDON_PORT}" ] && [ "${ADDON_PORT}" != "null" ]; then
+            bashio::log.info "Z2M host-exposed port: ${ADDON_PORT}"
+        fi
+    else
+        bashio::log.warning "No Zigbee2MQTT addon found!"
+    fi
+
+    # 3. Fallback: try HA host gateway
     if [ -z "${Z2M_HOST}" ]; then
-        bashio::log.warning "Z2M addon not found. Trying localhost:8099..."
-        Z2M_HOST="localhost"
-        Z2M_PORT="8099"
+        # Get the gateway IP (usually the HA host)
+        GW_IP=$(ip route | grep default | awk '{print $3}' | head -1)
+        if [ -n "${GW_IP}" ]; then
+            Z2M_HOST="${GW_IP}"
+            bashio::log.info "Fallback: using gateway IP ${Z2M_HOST}:${Z2M_PORT}"
+        else
+            Z2M_HOST="172.30.32.1"
+            Z2M_PORT="8099"
+            bashio::log.warning "Final fallback: ${Z2M_HOST}:${Z2M_PORT}"
+        fi
     fi
 fi
 
-bashio::log.info "Z2M WebSocket target: ws://${Z2M_HOST}:${Z2M_PORT}${Z2M_PATH}"
+bashio::log.info "Z2M WebSocket target: ws://${Z2M_HOST}:${Z2M_PORT}/api"
 
 # ============================================
 # Generate nginx config with WebSocket proxy
 # ============================================
-# The frontend connects to /ws which nginx proxies to Z2M's WebSocket
-# This way the browser only needs to reach this addon, not Z2M directly
-
 INGRESS_ENTRY=$(bashio::addon.ingress_entry)
 bashio::log.info "Ingress entry: ${INGRESS_ENTRY}"
 
@@ -96,13 +88,13 @@ server {
     root /var/www/z2m-lite;
     index index.html;
 
-    # DNS resolver for Docker/hassio network
     resolver 127.0.0.11 valid=30s ipv6=off;
 
+    set \$z2m_backend http://${Z2M_HOST}:${Z2M_PORT};
+
     # WebSocket proxy to Z2M
-    set \$z2m_upstream http://${Z2M_HOST}:${Z2M_PORT}/api;
     location /z2m-ws {
-        proxy_pass \$z2m_upstream;
+        proxy_pass \$z2m_backend/api;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -124,15 +116,9 @@ server {
 }
 EOF
 
-# ============================================
-# Patch frontend config
-# ============================================
-# Write a runtime config that the frontend reads
-# The frontend will connect to /z2m-ws (proxied by nginx) instead of Z2M directly
-
+# Write runtime config for frontend
 cat > /var/www/z2m-lite/z2m-config.json << EOF
 {
-  "wsUrl": "ws://${Z2M_HOST}:${Z2M_PORT}/api",
   "wsProxy": true,
   "ingressPath": "${INGRESS_ENTRY}"
 }
