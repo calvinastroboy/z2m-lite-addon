@@ -1,0 +1,32 @@
+name: "Z2M Lite"
+description: "A simplified, mobile-first Zigbee2MQTT management panel"
+version: "1.0.0"
+slug: "z2m-lite"
+url: "https://github.com/calvinastroboy/z2m-lite-hacs"
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+homeassistant_api: true
+hassio_api: true
+ingress: true
+ingress_port: 8099
+ingress_entry: /
+panel_icon: "mdi:zigbee"
+panel_title: "Z2M Lite"
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: "Z2M Lite Web UI"
+options:
+  z2m_host: ""
+  z2m_port: 8099
+  z2m_path: "/api"
+schema:
+  z2m_host: "str?"
+  z2m_port: "int?"
+  z2m_path: "str?"
+startup: "application"
+init: false
