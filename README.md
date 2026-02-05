@@ -6,7 +6,7 @@ A simplified, mobile-first Zigbee2MQTT management panel.
 
 1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**
 2. Click the **⋮** menu → **Repositories**
-3. Add: `https://github.com/calvinastroboy/z2m-lite-hacs`
+3. Add: `https://github.com/calvinastroboy/z2m-lite-addon`
 4. Find **Z2M Lite** in the store and install
 5. Start the add-on — it auto-discovers your Z2M installation
 6. Click **Open Web UI** or find it in the sidebar

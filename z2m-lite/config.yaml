@@ -2,7 +2,7 @@ name: "Z2M Lite"
 description: "A simplified, mobile-first Zigbee2MQTT management panel"
 version: "1.0.0"
 slug: "z2m-lite"
-url: "https://github.com/calvinastroboy/z2m-lite-hacs"
+url: "https://github.com/calvinastroboy/z2m-lite-addon"
 arch:
   - aarch64
   - amd64
