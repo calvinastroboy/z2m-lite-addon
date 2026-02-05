@@ -1,7 +1,7 @@
 #!/usr/bin/with-contenv bashio
 # Z2M Lite Add-on Startup Script
 
-bashio::log.info "Starting Z2M Lite Panel v1.0.4..."
+bashio::log.info "Starting Z2M Lite Panel v1.0.5..."
 
 # ============================================
 # Auto-discover Zigbee2MQTT
@@ -47,23 +47,25 @@ else
                 "http://supervisor/addons/${Z2M_SLUG}/info" 2>&1) || true
 
             if [ -n "${ADDON_INFO}" ]; then
-                # Try IP address
+                # Try IP address first
                 ADDON_IP=$(echo "${ADDON_INFO}" | jq -r '.data.ip_address // ""' 2>/dev/null) || true
                 bashio::log.info "Addon IP from API: '${ADDON_IP}'"
 
                 if [ -n "${ADDON_IP}" ] && [ "${ADDON_IP}" != "null" ] && [ "${ADDON_IP}" != "" ]; then
                     Z2M_HOST="${ADDON_IP}"
                 else
-                    # Try hostname format
-                    Z2M_HOST="${Z2M_SLUG//_/-}"
-                    bashio::log.info "No IP, trying hostname: ${Z2M_HOST}"
+                    # Use slug directly as Docker hostname (HA uses underscores, NOT hyphens)
+                    Z2M_HOST="${Z2M_SLUG}"
+                    bashio::log.info "No IP, using Docker hostname: ${Z2M_HOST}"
                 fi
 
                 # Log network info
                 NETWORK_INFO=$(echo "${ADDON_INFO}" | jq -r '.data.network // {}' 2>/dev/null) || true
                 bashio::log.info "Addon network: ${NETWORK_INFO}"
             else
-                bashio::log.warning "Could not get addon info for ${Z2M_SLUG}"
+                # Supervisor returned slug but no info — still use slug as hostname
+                Z2M_HOST="${Z2M_SLUG}"
+                bashio::log.warning "Could not get addon info, using slug as hostname: ${Z2M_HOST}"
             fi
         else
             bashio::log.warning "No zigbee2mqtt addon found in addon list"
@@ -72,20 +74,46 @@ else
         bashio::log.warning "Could not reach Supervisor API"
     fi
 
-    # 3. Fallback
+    # 3. Fallback — try common Z2M addon slugs as Docker hostnames
     if [ -z "${Z2M_HOST}" ]; then
-        GW_IP=$(ip route 2>/dev/null | grep default | awk '{print $3}' | head -1) || true
-        if [ -n "${GW_IP}" ]; then
-            Z2M_HOST="${GW_IP}"
-            bashio::log.info "Fallback: gateway IP ${Z2M_HOST}:${Z2M_PORT}"
-        else
-            Z2M_HOST="172.30.32.1"
-            bashio::log.warning "Final fallback: ${Z2M_HOST}:${Z2M_PORT}"
-        fi
+        for SLUG in "45df7312_zigbee2mqtt" "a0d7b954_zigbee2mqtt" "core_zigbee2mqtt"; do
+            if getent hosts "${SLUG}" >/dev/null 2>&1; then
+                Z2M_HOST="${SLUG}"
+                bashio::log.info "Fallback: found ${SLUG} via DNS"
+                break
+            fi
+        done
+    fi
+
+    # 4. Last resort fallback
+    if [ -z "${Z2M_HOST}" ]; then
+        Z2M_HOST="172.30.32.1"
+        bashio::log.warning "Final fallback: ${Z2M_HOST}:${Z2M_PORT} (may not work)"
     fi
 fi
 
 bashio::log.info "Final Z2M target: ws://${Z2M_HOST}:${Z2M_PORT}/api"
+
+# ============================================
+# Wait for Z2M to be reachable
+# ============================================
+MAX_WAIT=60
+WAITED=0
+bashio::log.info "Checking Z2M reachability at ${Z2M_HOST}:${Z2M_PORT}..."
+while ! nc -z "${Z2M_HOST}" "${Z2M_PORT}" 2>/dev/null; do
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        bashio::log.warning "Z2M not reachable after ${MAX_WAIT}s, starting nginx anyway"
+        break
+    fi
+    if [ $((WAITED % 10)) -eq 0 ]; then
+        bashio::log.info "Waiting for Z2M... (${WAITED}/${MAX_WAIT}s)"
+    fi
+    sleep 2
+    WAITED=$((WAITED+2))
+done
+if [ $WAITED -lt $MAX_WAIT ]; then
+    bashio::log.info "Z2M is reachable!"
+fi
 
 # ============================================
 # Generate nginx config
