@@ -1,6 +1,6 @@
 name: "Z2M Lite"
 description: "A simplified, mobile-first Zigbee2MQTT management panel"
-version: "1.0.0"
+version: "1.0.3"
 slug: "z2m-lite"
 url: "https://github.com/calvinastroboy/z2m-lite-addon"
 arch:
